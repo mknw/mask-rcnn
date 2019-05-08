@@ -106,3 +106,4 @@ venv.bak/
 # custom stuff
 insp
 *.swp
+model/
