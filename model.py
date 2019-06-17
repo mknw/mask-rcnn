@@ -45,7 +45,7 @@ class ResNet(Model):
 
 		# channel out is the first arg. 
 		# if channel_in is not given, channel_out = channel_in
-		self.conv2 = self._building_block(st+blks[0], channel_out=256, channel_in=64) 
+		self.conv2 = self._building_block(st+blks[0], 256, channel_in=64) 
 		self.block2 = [self._building_block(st+blks[i+1],256) for i in range(2)]
 
 		""" conv3_x """
@@ -53,8 +53,8 @@ class ResNet(Model):
 		# self.conv2 = Conv2D(512, kernel_size=(1,1), strides=(2, 2)) 
 		# why is this here? probably downs. for next layer. Let's see if removing it
 		# fucks it up. Indeed, can we implement it in blocks?
-		self.conv3 = self._building_block(st+blks[0], downsample=False,
-								 channel_out=512, channel_in=256)
+		self.conv3 = self._building_block(st+blks[0], 
+								 512, channel_in=256, downsample=True)
 		self.block3 = [self._building_block(st+blks[i+1], 512) for i in range(3)]
 
 		""" conv4_x """ 
@@ -62,15 +62,15 @@ class ResNet(Model):
 		# self.conv4 = Conv2D(1024, kernel_size=(1,1), strides=(2,2))
 		n_blocks = {'resnet51': 6, 'resnet101': 23}[config.BACKBONE]
 
-		self.conv4 = self._building_block(st+blks[0], downsample=False,
-									channel_out=1024, channel_in=512)
+		self.conv4 = self._building_block(st+blks[0],
+									1024, channel_in=512, downsample=True)
 		self.block4 = [self._building_block(st+blks[i+1],1024) for i in range(n_blocks-1)]
 		
 		""" conv5_x """
 		st = '5' # stage 5
 		# self.conv5 = Conv2D(2048, kernel_size=(1,1), strides=(2,2))
-		self.conv5 = self._building_block(st+blks[0], downsample=False,
-								channel_out=2048, channel_in=1024)
+		self.conv5 = self._building_block(st+blks[0], # downsample=False,
+								2048, channel_in=1024, downsample=True)
 		self.block5 = [self._building_block(st+blks[i+1], 2048) for i in range(2)]
 
 		""" dense """
@@ -102,7 +102,7 @@ class ResNet(Model):
 		return y
 
 
-	def _building_block(self, st_bl_name, downsample=False, channel_out=64, channel_in=None):
+	def _building_block(self, st_bl_name, channel_out=64, channel_in=None, downsample=False):
 		if channel_in is None:
 			channel_in = channel_out
 		return Block(st_bl_name, channel_in, channel_out, downsample)
@@ -119,6 +119,7 @@ class Block(Model):
 		(i.e. the number of output filter in the convolution).
 		In Resnet paper, 101 
 		'''
+
 		if not downsample:
 			strides = (1, 1)
 			pass
@@ -142,7 +143,7 @@ class Block(Model):
 		self.bn3 = BatchNormalization(name = bn_basename + '2c')
 		# here conv_basename is used only if self._shortcut is a convolutional identity block
 		# (else the value is unused)
-		self.shortcut = self._shortcut(channel_in, channel_out, strides, conv_basename+'1')
+		self.shortcut = self._shortcut(channel_in, channel_out, strides, conv_basename+'1') 
 
 	def call(self, x):
 		h = self.conv1(x)
@@ -160,7 +161,7 @@ class Block(Model):
 		h += shortcut
 		return tf.nn.relu(h)
 	
-	def _shortcut(self, channel_in, channel_out, strides, name):
+	def _shortcut(self, channel_in, channel_out, strides, name): # ,strides)
 		"""
 		Identity mappings if in- and out-put are same size.
 		Else, project with 1*1 convolutions. 
@@ -171,19 +172,20 @@ class Block(Model):
 		# channel_in and channel_out are always referred to the 
 		# bottleneck blocks
 		if channel_in != channel_out:
-			return self._projection(channel_out, strides, name)
+			return self._projection(channel_out, name, strides)
 		else:
 			return lambda x: x
 
-	def _projection(self, channel_out, strides, name):
-		return Conv2D(channel_out, kernel_size=(1, 1), strides=strides, padding = 'same', name=name)
+	def _projection(self, channel_out, name, strides):
+		return Conv2D(channel_out, kernel_size=(1, 1), padding='same',
+						strides=strides, name=name) # strides=strides)
 
 
 if __name__ =='__main__':
 
 	''' limit GPUs visibility '''
 	gpus = tf.config.experimental.list_physical_devices('GPU')
-	gpu_n = 3
+	gpu_n = 4
 	if gpus:
 		try:
 			tf.config.experimental.set_visible_devices(gpus[gpu_n], 'GPU')
