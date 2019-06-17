@@ -20,58 +20,39 @@ assert LooseVersion(tf.__version__) >= LooseVersion("2.0.0-alpha0")
 
 class ResNet(Model):
 	
-	def __init__(self, input_shape, output_dim, config):
+	def __init__(self, input_shape, output_dim):
 		
 		super(ResNet, self).__init__()
 		# assert config.BACKBONE in ['51', '101']
-
-		'''
-		TODO: readd downsampling through convolutions with stride=2
-
-		'''
 
 		""" conv1 """
 		# Here the output shape is NOT specified, 
 		# whereas in ResNet output size should be 112x112. 
 		# However, specifying filters=64 might be sufficient. 
-		self.conv1 = Conv2D(64, input_shape=input_shape, kernel_size=(7,7),strides=(2,2), padding='same', name='conv1')
+		self.conv1 = Conv2D(64, input_shape=input_shape, kernel_size=(7,7),strides=(2,2), padding='same')
 		self.bn1 = BatchNormalization()
 
 		""" conv2_x """
-		st= '2' # stage
-		blks = [l for l in 'abcdefghijklmnopqrstuvwxyz'] # blocks appendices
 		# MaxPool in conv2_x for consistency with He et al. 2015
 		self.pool1 = MaxPooling2D(pool_size=(3,3), strides=(2,2), padding='same')
-
 		# channel out is the first arg. 
 		# if channel_in is not given, channel_out = channel_in
-		self.conv2 = self._building_block(st+blks[0], channel_out=256, channel_in=64) 
-		self.block2 = [self._building_block(st+blks[i+1],256) for i in range(2)]
+		self.block0 = self._building_block(256, channel_in=64) 
+		self.block1 = [self._building_block(256) for _ in range(2)]
 
 		""" conv3_x """
-		st = '3' # stage 3
-		# self.conv2 = Conv2D(512, kernel_size=(1,1), strides=(2, 2)) 
-		# why is this here? probably downs. for next layer. Let's see if removing it
-		# fucks it up. Indeed, can we implement it in blocks?
-		self.conv3 = self._building_block(st+blks[0], downsample=False,
-								 channel_out=512, channel_in=256)
-		self.block3 = [self._building_block(st+blks[i+1], 512) for i in range(3)]
+		self.conv2 = Conv2D(512, kernel_size=(1,1), strides=(2, 2)) #
+		self.block2 = [self._building_block(512) for _ in range(4)]
 
 		""" conv4_x """ 
-		st = '4' # stage 4
-		# self.conv4 = Conv2D(1024, kernel_size=(1,1), strides=(2,2))
-		n_blocks = {'resnet51': 6, 'resnet101': 23}[config.BACKBONE]
-
-		self.conv4 = self._building_block(st+blks[0], downsample=False,
-									channel_out=1024, channel_in=512)
-		self.block4 = [self._building_block(st+blks[i+1],1024) for i in range(n_blocks-1)]
+		self.conv3 = Conv2D(1024, kernel_size=(1,1), strides=(2,2))
+		# n_blocks = {'51': 6, '101': 23}[variant]
+		n_blocks = 6
+		self.block3 = [self._building_block(1024) for _ in range(n_blocks)]
 		
 		""" conv5_x """
-		st = '5' # stage 5
-		# self.conv5 = Conv2D(2048, kernel_size=(1,1), strides=(2,2))
-		self.conv5 = self._building_block(st+blks[0], downsample=False,
-								channel_out=2048, channel_in=1024)
-		self.block5 = [self._building_block(st+blks[i+1], 2048) for i in range(2)]
+		self.conv4 = Conv2D(2048, kernel_size=(1,1), strides=(2,2))
+		self.block4 = [self._building_block(2048) for _ in range(3)]
 
 		""" dense """
 		self.avg_pool = GlobalAveragePooling2D()
@@ -84,17 +65,17 @@ class ResNet(Model):
 		h = self.bn1(h)
 		h = tf.nn.relu(h)
 		h = self.pool1(h) # start conv2
-		h = self.conv2(h) # conv2_1
+		h = self.block0(h) # conv2_1
+		for block in self.block1:
+			h = block(h)
+		h = self.conv2(h) # start conv3
 		for block in self.block2:
 			h = block(h)
-		h = self.conv3(h) # start conv3
+		h = self.conv3(h) # start conv4
 		for block in self.block3:
 			h = block(h)
-		h = self.conv4(h) # start conv4
+		h = self.conv4(h) # start conv5
 		for block in self.block4:
-			h = block(h)
-		h = self.conv5(h) # start conv5
-		for block in self.block5:
 			h = block(h)
 		h = self.avg_pool(h) # start dense
 		h = self.fc(h) # fully connected
@@ -102,15 +83,15 @@ class ResNet(Model):
 		return y
 
 
-	def _building_block(self, st_bl_name, downsample=False, channel_out=64, channel_in=None):
+	def _building_block(self, channel_out=64, channel_in=None):
 		if channel_in is None:
 			channel_in = channel_out
-		return Block(st_bl_name, channel_in, channel_out, downsample)
+		return Block(channel_in, channel_out)
 
 
 class Block(Model):
 	"""ResNet101 building block"""
-	def __init__(self, st_bl_name, channel_in=64, channel_out=256, downsample=False):
+	def __init__(self, channel_in=64, channel_out=256, stage, block):
 		
 		super(Block, self).__init__()
 		
@@ -119,30 +100,17 @@ class Block(Model):
 		(i.e. the number of output filter in the convolution).
 		In Resnet paper, 101 
 		'''
-		if not downsample:
-			strides = (1, 1)
-			pass
-		else:
-			strides = (2, 2)
-
-		conv_basename = 'res' + st_bl_name + '_branch'
-		bn_basename = 'bn' + st_bl_name + '_branch'
-
 		filters = channel_out // 4
-		self.conv1 = Conv2D(filters, kernel_size=(1,1), strides=strides,
-				padding='same', name=conv_basename + '2a')
-		self.bn1 = BatchNormalization(name=bn_basename + '2a')
+		self.conv1 = Conv2D(filters, kernel_size=(1,1), padding='same')
+		self.bn1 = BatchNormalization()
+		self.relu1 = Activation('relu')
 
-		self.conv2 = Conv2D(filters, kernel_size=(3, 3), padding='same',
-				name = conv_basename + '2b')
-		self.bn2 = BatchNormalization(name = bn_basename + '2b')
+		self.conv2 = Conv2D(filters, kernel_size=(3, 3), padding='same')
+		self.bn2 = BatchNormalization()
 
-		self.conv3 = Conv2D(channel_out, kernel_size=(1,1), padding='same',
-				name = conv_basename + '2c')
-		self.bn3 = BatchNormalization(name = bn_basename + '2c')
-		# here conv_basename is used only if self._shortcut is a convolutional identity block
-		# (else the value is unused)
-		self.shortcut = self._shortcut(channel_in, channel_out, strides, conv_basename+'1')
+		self.conv3 = Conv2D(channel_out, kernel_size=(1,1), padding='same')
+		self.bn3 = BatchNormalization()
+		self.shortcut = self._shortcut(channel_in, channel_out)
 
 	def call(self, x):
 		h = self.conv1(x)
@@ -160,7 +128,7 @@ class Block(Model):
 		h += shortcut
 		return tf.nn.relu(h)
 	
-	def _shortcut(self, channel_in, channel_out, strides, name):
+	def _shortcut(self, channel_in, channel_out):
 		"""
 		Identity mappings if in- and out-put are same size.
 		Else, project with 1*1 convolutions. 
@@ -168,15 +136,13 @@ class Block(Model):
 		a (convolutional) projection, whereas the following
 		are identity mappings. 
 		"""
-		# channel_in and channel_out are always referred to the 
-		# bottleneck blocks
 		if channel_in != channel_out:
-			return self._projection(channel_out, strides, name)
+			return self._projection(channel_out)
 		else:
 			return lambda x: x
 
-	def _projection(self, channel_out, strides, name):
-		return Conv2D(channel_out, kernel_size=(1, 1), strides=strides, padding = 'same', name=name)
+	def _projection(self, channel_out):
+		return Conv2D(channel_out, kernel_size=(1, 1), padding = 'same')
 
 
 if __name__ =='__main__':
@@ -248,36 +214,32 @@ if __name__ =='__main__':
 
 
 	''' model '''
-	from config import Config
-	mycon = Config()
-	model = ResNet((32, 32, 3), 100, mycon)
-	model.build(input_shape=(100, 32, 32, 3)) # place correct shape from imagenet
+	model = ResNet((32, 32, 3), 100)
+	model.build(input_shape=(None, 32, 32, 3)) # place correct shape from imagenet
 
 	import ipdb; ipdb.set_trace()
 	
 	loss_object = tf.losses.SparseCategoricalCrossentropy()
-	optimizer = tf.keras.optimizers.SGD(lr=0.1)
+	optimizer = tf.keras.optimizers.Adam()
 
 
 	train_loss_results = []
 	train_accuracy_results = []
 
-	num_epochs = 500
+	num_epochs = 50
 	
 	
 	for epoch in range(num_epochs):
 	
 		epoch_loss_avg = tf.keras.metrics.Mean()
 		epoch_accuracy = tf.keras.metrics.SparseCategoricalAccuracy()
-		k = 0
+		
 		for batch in b_train_set:
 			img_btch, lab_btch = batch
 			loss_value, grads = grad(model, img_btch, lab_btch)
 			optimizer.apply_gradients(zip(grads, model.trainable_variables))
 			epoch_loss_avg(loss_value)
 			epoch_accuracy(lab_btch, model(img_btch)) # this needs to be a batch version of it
-			print("Epoch {:03d}: Batch: {:03d} Loss: {:.3%}, Accuracy: {:.3%}".format(epoch, k,  epoch_loss_avg.result(), epoch_accuracy.result()))
-			k+=1
 	
 		# end epoch
 		train_loss_results.append(epoch_loss_avg.result())
