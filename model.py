@@ -185,10 +185,10 @@ if __name__ =='__main__':
 
 	''' limit GPUs visibility '''
 	gpus = tf.config.experimental.list_physical_devices('GPU')
-	gpu_n = 4
+	GPU_N = 4
 	if gpus:
 		try:
-			tf.config.experimental.set_visible_devices(gpus[gpu_n], 'GPU')
+			tf.config.experimental.set_visible_devices(gpus[GPU_N], 'GPU')
 			logical_gpus = tf.config.experimental.list_logical_devices('GPU')
 			print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPUs")
 		except RuntimeError as e:
@@ -245,12 +245,14 @@ if __name__ =='__main__':
 	#
 	# Alternatively, we can just iterate over the Datasets
 	# iff eager mode is on (i.e. by default).
-	b_train_set = train_set.batch(100)
-	b_test_set = test_set.batch(100)
+	b_train_set = train_set.batch(256)
+	b_test_set = test_set.batch(256)
 
 
 	''' model '''
 	from config import Config
+	from viz import *
+
 	mycon = Config()
 	model = ResNet((32, 32, 3), 100, mycon)
 	model.build(input_shape=(100, 32, 32, 3)) # place correct shape from imagenet
@@ -267,29 +269,42 @@ if __name__ =='__main__':
 	num_epochs = 500
 	
 	
+
 	for epoch in range(num_epochs):
 	
 		epoch_loss_avg = tf.keras.metrics.Mean()
 		epoch_accuracy = tf.keras.metrics.SparseCategoricalAccuracy()
 		k = 0
+		
+
 		for batch in b_train_set:
 			img_btch, lab_btch = batch
 			loss_value, grads = grad(model, img_btch, lab_btch)
 			optimizer.apply_gradients(zip(grads, model.trainable_variables))
 			epoch_loss_avg(loss_value)
 			epoch_accuracy(lab_btch, model(img_btch)) # this needs to be a batch version of it
-			print("Epoch {:03d}: Batch: {:03d} Loss: {:.3%}, Accuracy: {:.3%}".format(epoch, k,  epoch_loss_avg.result(), epoch_accuracy.result()))
+			if epoch < 1:
+				print("Epoch {:03d}: Batch: {:03d} Loss: {:.3%}, Accuracy: {:.3%}".format(epoch, k,  epoch_loss_avg.result(), epoch_accuracy.result()))
 			k+=1
 	
+		print("Epoch {:03d}: Loss: {:.3%}, Accuracy: {:.3%}".format(epoch, epoch_loss_avg.result(), epoch_accuracy.result()))
 		# end epoch
 		train_loss_results.append(epoch_loss_avg.result())
 		train_accuracy_results.append(epoch_accuracy.result())
-	
-		# if epoch % 50 == 0:
-		print("Epoch {:03d}: Loss: {:.3%}".format(epoch, epoch_loss_avg.result(), epoch_accuracy.result()))
-	
-	import ipdb; ipdb.set_trace()
+		
+		if epoch % 10 == 0:
+			save_plot(train_loss_results, train_accuracy_results, epoch)
 
+		if epoch == 10:
+			optimizer = tf.keras.optimizers.SGD(lr=0.01)
+		
+		if epoch == 100:
+			optimizer = tf.keras.optimizers.SGD(lr=0.001)
+
+
+		# if epoch % 50 == 0:
+	
+#	import ipdb; ipdb.set_trace()
 
 
 
