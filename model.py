@@ -225,6 +225,19 @@ if __name__ =='__main__':
 			loss_value = loss(model, inputs, targets)
 		return loss_value, tape.gradient(loss_value, model.trainable_variables)
 
+	@tf.function
+	def reduce_lr(learning_rate, epoch_loss, factor, patience=5, min_lr=0):
+		'''reduce learning rate on plateau'''
+		
+		if len(epoch_loss) > patience+1:
+			last_few = epoch_loss[-patience]
+			last_few = [float('inf')] + last_few
+			for i in range(patience):
+				decrease = last_few[i] > last_few[i+1]
+				if not decrease:
+					return learning_rate
+			return learning_rate / factor
+
 
 	''' dataset and dataset iterator'''
 	cifar100 = tf.keras.datasets.cifar100
@@ -259,7 +272,8 @@ if __name__ =='__main__':
 	''' initialize '''
 	learning_rate = 0.1
 	loss_object = tf.losses.SparseCategoricalCrossentropy()
-	optimizer = tf.keras.optimizers.SGD( lr=learning_rate, momentum = 0.9)
+
+	optimizer = tf.keras.optimizers.SGD( lr=[reduce_lr], momentum = 0.9)
 
 
 	train_loss_results = []
@@ -297,9 +311,10 @@ if __name__ =='__main__':
 			fname = 'imgs/Accuracy_Loss_' + str(epoch) + '.png'
 			save_plot(train_loss_results, train_accuracy_results, fname)
 		
-		if train_loss_results[-1] < train_loss_results[-2]: # was if epoch == 10:
-			learning_rate /= 10
-			optimizer = tf.keras.optimizers.SGD(lr=learning_rate, momentum=0.9)
+		#if train_loss_results[-1] > train_loss_results[-2]: # was if epoch == 10:
+		#	learning_rate /= 10
+		#	optimizer = tf.keras.optimizers.SGD(lr=learning_rate, momentum=0.9)
+		#	print("Sir, we just updated the learning rate Sir.")
 		
 	
 	
