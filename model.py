@@ -183,7 +183,7 @@ class Block(Model):
 
 if __name__ =='__main__':
 
-	''' limit GPUs visibility '''
+	''' GPU(s) '''
 	gpus = tf.config.experimental.list_physical_devices('GPU')
 	GPU_N = 4
 	if gpus:
@@ -199,7 +199,7 @@ if __name__ =='__main__':
 	tf.random.set_seed(420)
 
 	'''
-	loss, gradients, optimizer.
+	loss and gradient function.
 	'''
 	# loss_object = tf.losses.SparseCategoricalCrossentropy()
 
@@ -225,20 +225,18 @@ if __name__ =='__main__':
 		return loss_value, tape.gradient(loss_value, model.trainable_variables)
 
 
-	''' dataset '''
+	''' dataset and dataset iterator'''
 	cifar100 = tf.keras.datasets.cifar100
 	(x_train, y_train), (x_test, y_test) = cifar100.load_data(label_mode='fine')
 	
 	# preprocess
 	x_train = (x_train.reshape(-1, 32, 32, 3) / 255).astype(np.float32)
-	x_test= (x_test.reshape(-1, 32, 32, 3) / 255).astype(np.float32)
+	x_test = (x_test.reshape(-1, 32, 32, 3) / 255).astype(np.float32)
 	
 	# create tf.data.Dataset
 	train_set = tf.data.Dataset.from_tensor_slices((x_train, y_train))
 	test_set = tf.data.Dataset.from_tensor_slices((x_test, y_test))
 
-
-	'''iterator'''
 	# now train_set and test_set are Dataset objects.
 	# we return the dataset iterator by calling the
 	# __iter__() method
@@ -257,8 +255,7 @@ if __name__ =='__main__':
 	model = ResNet((32, 32, 3), 100, mycon)
 	model.build(input_shape=(100, 32, 32, 3)) # place correct shape from imagenet
 
-	import ipdb; ipdb.set_trace()
-	
+	''' initialize '''
 	loss_object = tf.losses.SparseCategoricalCrossentropy()
 	optimizer = tf.keras.optimizers.SGD(lr=0.1)
 
@@ -269,6 +266,7 @@ if __name__ =='__main__':
 	num_epochs = 500
 	
 	
+	''' train '''
 
 	for epoch in range(num_epochs):
 	
@@ -282,7 +280,8 @@ if __name__ =='__main__':
 			loss_value, grads = grad(model, img_btch, lab_btch)
 			optimizer.apply_gradients(zip(grads, model.trainable_variables))
 			epoch_loss_avg(loss_value)
-			epoch_accuracy(lab_btch, model(img_btch)) # this needs to be a batch version of it
+			epoch_accuracy(lab_btch, model(img_btch))
+
 			if epoch < 1:
 				print("Epoch {:03d}: Batch: {:03d} Loss: {:.3%}, Accuracy: {:.3%}".format(epoch, k,  epoch_loss_avg.result(), epoch_accuracy.result()))
 			k+=1
@@ -293,86 +292,52 @@ if __name__ =='__main__':
 		train_accuracy_results.append(epoch_accuracy.result())
 		
 		if epoch % 10 == 0:
-			save_plot(train_loss_results, train_accuracy_results, epoch)
+			fname = './imgs/Accuracy_Loss_' + str(epoch) + '.png'
+			save_plot(train_loss_results, train_accuracy_results, fname)
 
 		if epoch == 10:
 			optimizer = tf.keras.optimizers.SGD(lr=0.01)
 		
 		if epoch == 100:
 			optimizer = tf.keras.optimizers.SGD(lr=0.001)
-
-
-		# if epoch % 50 == 0:
 	
-#	import ipdb; ipdb.set_trace()
+	
+
+	''' test '''
+	# initialize 1) loss object, 2) overall metrics, 3) per batch metric lists. 
+	loss_object = tf.losses.SparseCategoricalCrossentropy()
+
+	test_loss_avg = tf.keras.metrics.Mean()
+	test_accuracy = tf.keras.metrics.SparseCategoricalAccuracy()
+
+	pbtch_loss_results = []
+	pbtch_accuracy_results = []
+	k = 0 # batch counter
+	
+	for batch in b_test_set:
+
+		btch_accuracy = tf.keras.metrics.SparseCategoricalAccuracy()
+		
+		# compute loss
+		img_btch, lab_btch = batch
+		loss_value = loss(model, img_btch, lab_btch)
+		
+		# compute metrics per batch.
+		pbtch_loss_results.append(loss_value)
+
+		btch_accuracy(lab_btch, model(img_btch))
+		pbtch_accuracy_results.append(btch_accuracy.result())
+
+		# and whole test set. 
+		test_accuracy(lab_btch, model(img_btch))
+		test_loss_avg(loss_value)
 
 
+		print("Batch: {:03d} Loss: {:.3%}, Accuracy: {:.3%}".format(k,  loss_value, btch_accuracy.result()))
+		k+=1
 
+	save_plot(pbtch_loss_results, pbtch_accuracy_results, './imgs/TEST.png')
+	print("Overall performance:")
+	print("Loss: {:.3%}, Accuracy: {:.3%}".format(epoch, epoch_loss_avg.result(), epoch_accuracy.result()))
 
-
-
-
-
-
-
-
-
-# 	def BatchNorm(BatchNormalization):
-# 	  """Extends the Keras BatchNormalization class to allow a central place
-# 		to make changes if needed.
-# 		
-# 		Batch normalization has a negative effect on training if batches are small
-# 		so this layer is often frozen (via setting in Config class) and functions
-# 		as linear layer.
-# 		"""
-# 	def call(self, inputs, training=None):
-# 		""" Args:
-# 				- input: input tensor
-# 				- training: 'None' trains; 'False' freezes BatchNorm layer
-# 		"""
-# 		return super(self.__class__, self).call(inputs, training=training)
-# 
-# 
-# def identity_block(input_tensor, kernel_size, filters, stage, block, use_bias=True, train_bn=True):
-# 
-# 	""" 
-# 	No convolutional layer applied. 
-# 	"""
-# 	
-# 	conv_prefix = 'res' + str(stage) + block + '_branch'
-# 	bn_prefix = 'bn' + str(stage) + block + '_branch'
-# 	prefixes = [conv_prefix, bn_prefix]
-# 
-# 	nb_filter1, nb_filter2, nb_filter3 = filters
-# 	
-# 	c_name, bn_name = [prefix + '2a' for prefix in prefixes]
-# 	x = Conv2D(nb_filter1, (1, 1), name=c_name, use_bias=use_bias)(input_tensor)
-# 	x = BatchNorm(name=bn_name)(x, training=train_bn)
-# 	x = Activation('relu')(x)
-# 	
-# 	c_name, bn_name = [prefix + '2b' for prefix in prefixes]
-# 	x = Conv2D(nb_filter2, (1, 1), name=c_name, use_bias=use_bias)(input_tensor)
-# 	x = BatchNorm(name=bn_name)(x, training=train_bn)
-# 	x = Activation('relu')(x)
-# 
-# 	c_name, bn_name = [prefix + '2c' for prefix in prefixes]
-# 	x = Conv2D(nb_filter3, (1, 1), name=c_name, use_bias=use_bias)(x)
-# 	x = BatchNorm(name=bn_name)(x, training=train_bn)
-# 
-# 	x = Add()([x, input_tensor]) # summing input and output, we create the ID block. 
-# 	x = Activaton('relu', name='res' + str(stage) + block + '_out')(x)
-# 	return x
-# 
-# 
-# def resnet_block(input_tensor, kernel_size, filters, stage, block,
-#               strides=(2,2), use_bias=True, train_bn=True):
-# 	
-# 	conv_prefix = 'res' + str(stage) + block + '_branch'
-# 	bn_prefix = 'bn' + str(stage) + block + '_branch'
-# 	prefixes = [conv_prefix, bn_prefix]
-# 
-# 	nb_filter1, nnb_filter2, nb_filter3 = filters
-# 	
-# 	c_name, bn_name = [prefix + '2a' for prefix in prefixes]
-# 	x = Conv2D(nb_filter1, (1, 1), strides=strides, name=c_name, use_bias=
-# 	
+	import ipdb; ipdb.set_trace()
