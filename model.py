@@ -26,8 +26,9 @@ class ResNet(Model):
 		# assert config.BACKBONE in ['51', '101']
 
 		'''
-		TODO: readd downsampling through convolutions with stride=2
-
+		TODO: add regularization loss (weight decay = 0.0001
+		This is done via the conv2d (and possibly other layers) arg: kernel_regularizer.
+		Possible solution can be 'tf.contrib.layers.l2_regularizer'.
 		'''
 
 		""" conv1 """
@@ -256,8 +257,9 @@ if __name__ =='__main__':
 	model.build(input_shape=(100, 32, 32, 3)) # place correct shape from imagenet
 
 	''' initialize '''
+	learning_rate = 0.1
 	loss_object = tf.losses.SparseCategoricalCrossentropy()
-	optimizer = tf.keras.optimizers.SGD(lr=0.1)
+	optimizer = tf.keras.optimizers.SGD( lr=learning_rate, momentum = 0.9)
 
 
 	train_loss_results = []
@@ -291,15 +293,14 @@ if __name__ =='__main__':
 		train_loss_results.append(epoch_loss_avg.result())
 		train_accuracy_results.append(epoch_accuracy.result())
 		
-		if epoch % 10 == 0:
-			fname = './imgs/Accuracy_Loss_' + str(epoch) + '.png'
+		if epoch % 50 == 0:
+			fname = 'imgs/Accuracy_Loss_' + str(epoch) + '.png'
 			save_plot(train_loss_results, train_accuracy_results, fname)
-
-		if epoch == 10:
-			optimizer = tf.keras.optimizers.SGD(lr=0.01)
 		
-		if epoch == 100:
-			optimizer = tf.keras.optimizers.SGD(lr=0.001)
+		if train_loss_results[-1] < train_loss_results[-2]: # was if epoch == 10:
+			learning_rate /= 10
+			optimizer = tf.keras.optimizers.SGD(lr=learning_rate, momentum=0.9)
+		
 	
 	
 
@@ -336,7 +337,7 @@ if __name__ =='__main__':
 		print("Batch: {:03d} Loss: {:.3%}, Accuracy: {:.3%}".format(k,  loss_value, btch_accuracy.result()))
 		k+=1
 
-	save_plot(pbtch_loss_results, pbtch_accuracy_results, './imgs/TEST.png')
+	save_plot(pbtch_loss_results, pbtch_accuracy_results, 'imgs/TEST.png')
 	print("Overall performance:")
 	print("Loss: {:.3%}, Accuracy: {:.3%}".format(epoch, epoch_loss_avg.result(), epoch_accuracy.result()))
 
