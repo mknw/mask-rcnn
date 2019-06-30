@@ -13,6 +13,14 @@ import tensorflow as tf
 from tensorflow.keras.layers import GlobalAveragePooling2D, Conv2D, BatchNormalization, Activation, MaxPooling2D, Dense
 from tensorflow.keras import Model
 
+'''
+TODO:
+- maskRCNN
+- Batchnorm layers freezing/training. Important for small size batch. 
+- LearningRateReducer:
+	1. tune plateau_range
+	2. At the end of training, learning rate always change. We could make plateau_range adaptive too (e.g. multiplied by LRR.factor)
+'''
 
 from distutils.version import LooseVersion
 assert LooseVersion(tf.__version__) >= LooseVersion("2.0.0-alpha0")
@@ -181,12 +189,61 @@ class Block(Model):
 		return Conv2D(channel_out, kernel_size=(1, 1), padding='same',
 						strides=strides, name=name) # strides=strides)
 
+	
+class LearningRateReducer:
+	"""
+	Belongs in utils.py
+	"""
+	def __init__(self, init_lr, factor, patience, refractory_interval, 
+		           plateau_range=0.01, min_lr=1e-05):
+		# minimum lr = 0.00001
+		self.learning_rate = init_lr
+		self.factor = factor
+		self.patience = patience
+		self.plateau_range = plateau_range
+		self.min_lr = min_lr
+		self.min_reached = False
+		self.last_few = []
+		#to make sure LR update is not triggered multiple times in a row
+		self.n_invocations = 0
+		self.ref_int = refractory_interval
+
+	def memorize_hist(self, history):
+		# currently unused
+		self.last_few.append(history[-1])
+		try:
+			self.last_few = self.last_few[-self.patience]
+		except IndexError:
+			print('you know what happened')
+			pass
+		
+
+	def monitor(self, history=[]):
+
+		self.n_invocations += 1
+		if self.n_invocations > self.ref_int and not self.min_reached:
+			last_few = history[-self.patience:]
+			cum_diff = np.abs(np.sum(np.diff(last_few)))
+
+			if cum_diff < self.plateau_range:
+				lr = self.learning_rate * self.factor
+				self.learning_rate = max(lr, self.min_lr)
+				self.n_invocations = 0
+
+				if self.learning_rate <= self.min_lr:
+					self.min_reached = True
+					self.learning_rate = self.min_lr
+					print("Hit Minimum LR: {:.5f}".format(self.min_lr))
+				# N in {:.Nf} should be changed if min_lr is. 
+				print("New Learning Rate: {:.5f}".format(self.learning_rate))
+		return self.learning_rate
+	
 
 if __name__ =='__main__':
 
 	''' GPU(s) '''
 	gpus = tf.config.experimental.list_physical_devices('GPU')
-	GPU_N = 4
+	GPU_N = 5
 	if gpus:
 		try:
 			tf.config.experimental.set_visible_devices(gpus[GPU_N], 'GPU')
@@ -225,23 +282,27 @@ if __name__ =='__main__':
 			loss_value = loss(model, inputs, targets)
 		return loss_value, tape.gradient(loss_value, model.trainable_variables)
 
-	@tf.function
-	def reduce_lr(learning_rate, epoch_loss, factor, patience=5, min_lr=0):
-		'''reduce learning rate on plateau'''
 		
-		if len(epoch_loss) > patience+1:
-			last_few = epoch_loss[-patience]
-			last_few = [float('inf')] + last_few
-			for i in range(patience):
-				decrease = last_few[i] > last_few[i+1]
-				if not decrease:
-					return learning_rate
-			return learning_rate / factor
+
+
+	# return lr_reducer
+	# hist1 = [90, 89, 88, 87, 86, 85, 84, 83]
+	# hist2 = [90, 89.5, 90, 90.5, 90, 89.5, 90, 90.5]
+	# adapt_lr = LearningRateReducer(0.1, 0.1, 4)
+	# 
+	# anslr1 = adapt_lr.monitor(hist1) # this should be 0.1
+	# anslr2 = adapt_lr.monitor(hist2) # this should be 0.01
+	
 
 
 	''' dataset and dataset iterator'''
-	cifar100 = tf.keras.datasets.cifar100
-	(x_train, y_train), (x_test, y_test) = cifar100.load_data(label_mode='fine')
+	## cifar100 is likey too small. Switching to imagenet2012
+	# cifar100 = tf.keras.datasets.cifar100
+	# (x_train, y_train), (x_test, y_test) = cifar100.load_data(label_mode='fine')
+
+	import tensorflow_datasets as tfds
+	tfds.list_builders()
+	import ipdb; ipdb.set_trace()
 	
 	# preprocess
 	x_train = (x_train.reshape(-1, 32, 32, 3) / 255).astype(np.float32)
@@ -257,6 +318,8 @@ if __name__ =='__main__':
 	#
 	# Alternatively, we can just iterate over the Datasets
 	# iff eager mode is on (i.e. by default).
+	train_set = train_set.shuffle(10000)
+	test_set.shuffle(10000)
 	b_train_set = train_set.batch(256)
 	b_test_set = test_set.batch(256)
 
@@ -264,22 +327,25 @@ if __name__ =='__main__':
 	''' model '''
 	from config import Config
 	from viz import *
+	from utils import test_model
 
 	mycon = Config()
 	model = ResNet((32, 32, 3), 100, mycon)
 	model.build(input_shape=(100, 32, 32, 3)) # place correct shape from imagenet
 
 	''' initialize '''
-	learning_rate = 0.1
+	# Reduce LR with *0.1 when plateau is detected
+	adapt_lr = LearningRateReducer(init_lr=0.1, factor=0.1,
+						patience=10, refractory_interval=20) # wait 20 epochs from last update
 	loss_object = tf.losses.SparseCategoricalCrossentropy()
-
-	optimizer = tf.keras.optimizers.SGD( lr=[reduce_lr], momentum = 0.9)
+	optimizer = tf.keras.optimizers.SGD(adapt_lr.monitor(), momentum = 0.9)
 
 
 	train_loss_results = []
 	train_accuracy_results = []
+	test_loss_results, test_acc_results = [], []
 
-	num_epochs = 500
+	num_epochs = 300
 	
 	
 	''' train '''
@@ -290,6 +356,7 @@ if __name__ =='__main__':
 		epoch_accuracy = tf.keras.metrics.SparseCategoricalAccuracy()
 		k = 0
 		
+		optimizer = tf.keras.optimizers.SGD(adapt_lr.monitor(train_loss_results), momentum = 0.9)
 
 		for batch in b_train_set:
 			img_btch, lab_btch = batch
@@ -301,59 +368,33 @@ if __name__ =='__main__':
 			if epoch < 1:
 				print("Epoch {:03d}: Batch: {:03d} Loss: {:.3%}, Accuracy: {:.3%}".format(epoch, k,  epoch_loss_avg.result(), epoch_accuracy.result()))
 			k+=1
-	
-		print("Epoch {:03d}: Loss: {:.3%}, Accuracy: {:.3%}".format(epoch, epoch_loss_avg.result(), epoch_accuracy.result()))
+		
+		print("Trainset >> Epoch {:03d}: Loss: {:.3%}, Accuracy: {:.3%}".format(epoch, epoch_loss_avg.result(), epoch_accuracy.result()))
 		# end epoch
+
+		#if int(epoch_accuracy.result() > 70):
+		test_loss, test_accuracy = test_model(model, b_test_set)
+
+		test_loss_results.append(test_loss)
+		test_acc_results.append(test_accuracy)
 		train_loss_results.append(epoch_loss_avg.result())
 		train_accuracy_results.append(epoch_accuracy.result())
+
+		# import ipdb; ipdb.set_trace()
 		
-		if epoch % 50 == 0:
-			fname = 'imgs/Accuracy_Loss_' + str(epoch) + '.png'
-			save_plot(train_loss_results, train_accuracy_results, fname)
+		if epoch % 100 == 0:
+			fname = 'imgs/Test_Acc_Loss_CIFAR100_' + str(epoch) + '.png'
+			# here we should plot metrics and loss for test too. 
+			# hence TODO: update save_plot
+			loss_l = [train_loss_results, test_loss_results]
+			acc_l = [train_accuracy_results, test_acc_results]
+			save_plot(loss_l, acc_l, fname)
 		
 		#if train_loss_results[-1] > train_loss_results[-2]: # was if epoch == 10:
 		#	learning_rate /= 10
 		#	optimizer = tf.keras.optimizers.SGD(lr=learning_rate, momentum=0.9)
 		#	print("Sir, we just updated the learning rate Sir.")
-		
 	
 	
-
-	''' test '''
-	# initialize 1) loss object, 2) overall metrics, 3) per batch metric lists. 
-	loss_object = tf.losses.SparseCategoricalCrossentropy()
-
-	test_loss_avg = tf.keras.metrics.Mean()
-	test_accuracy = tf.keras.metrics.SparseCategoricalAccuracy()
-
-	pbtch_loss_results = []
-	pbtch_accuracy_results = []
-	k = 0 # batch counter
 	
-	for batch in b_test_set:
-
-		btch_accuracy = tf.keras.metrics.SparseCategoricalAccuracy()
-		
-		# compute loss
-		img_btch, lab_btch = batch
-		loss_value = loss(model, img_btch, lab_btch)
-		
-		# compute metrics per batch.
-		pbtch_loss_results.append(loss_value)
-
-		btch_accuracy(lab_btch, model(img_btch))
-		pbtch_accuracy_results.append(btch_accuracy.result())
-
-		# and whole test set. 
-		test_accuracy(lab_btch, model(img_btch))
-		test_loss_avg(loss_value)
-
-
-		print("Batch: {:03d} Loss: {:.3%}, Accuracy: {:.3%}".format(k,  loss_value, btch_accuracy.result()))
-		k+=1
-
-	save_plot(pbtch_loss_results, pbtch_accuracy_results, 'imgs/TEST.png')
-	print("Overall performance:")
-	print("Loss: {:.3%}, Accuracy: {:.3%}".format(epoch, epoch_loss_avg.result(), epoch_accuracy.result()))
-
 	import ipdb; ipdb.set_trace()
