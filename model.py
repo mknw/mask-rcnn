@@ -28,7 +28,7 @@ TODO:
 '''
 
 from distutils.version import LooseVersion
-assert LooseVersion(tf.__version__) >= LooseVersion("2.0.0-alpha0")
+assert LooseVersion(tf.__version__) >= LooseVersion("2.0.0-beta1")
 
 
 class ResNet(Model):
