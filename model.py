@@ -1,5 +1,9 @@
 """
 Mask R-CNN with TF 2.0 - alpha
+TODOs:
+1. crop some instead of padding all to max (now proportion of zeros is 0.6 on average for the first batch)
+2. check whether softmax_crossentropy_with_logits can be used here (imagenet categories are mutually exclusive)
+3. Configure distribute training
 """
 
 
@@ -10,8 +14,9 @@ import re
 import math
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras.layers import GlobalAveragePooling2D, Conv2D, BatchNormalization, Activation, MaxPooling2D, Dense
+from tensorflow.keras.layers import Layer, GlobalAveragePooling2D, Conv2D, BatchNormalization, Activation, MaxPooling2D, Dense
 from tensorflow.keras import Model
+from utils import onetwentyseven, test_model, LearningRateReducer
 
 '''
 TODO:
@@ -42,7 +47,6 @@ class ResNet(Model):
 		""" conv1 """
 		# Here the output shape is NOT specified, 
 		# whereas in ResNet output size should be 112x112. 
-		# However, specifying filters=64 might be sufficient. 
 		self.conv1 = Conv2D(64, input_shape=input_shape, kernel_size=(7,7),strides=(2,2), padding='same', name='conv1')
 		self.bn1 = BatchNormalization()
 
@@ -117,7 +121,7 @@ class ResNet(Model):
 		return Block(st_bl_name, channel_in, channel_out, downsample)
 
 
-class Block(Model):
+class Block(Layer):
 	"""ResNet101 building block"""
 	def __init__(self, st_bl_name, channel_in=64, channel_out=256, downsample=False):
 		
@@ -170,7 +174,7 @@ class Block(Model):
 		h += shortcut
 		return tf.nn.relu(h)
 	
-	def _shortcut(self, channel_in, channel_out, strides, name): # ,strides)
+	def _shortcut(self, channel_in, channel_out, strides, name):
 		"""
 		Identity mappings if in- and out-put are same size.
 		Else, project with 1*1 convolutions. 
@@ -183,67 +187,20 @@ class Block(Model):
 		if channel_in != channel_out:
 			return self._projection(channel_out, name, strides)
 		else:
-			return lambda x: x
+			return lambda x: x # Lambda layer could allow us to give it a name.
 
 	def _projection(self, channel_out, name, strides):
 		return Conv2D(channel_out, kernel_size=(1, 1), padding='same',
 						strides=strides, name=name) # strides=strides)
 
 	
-class LearningRateReducer:
-	"""
-	Belongs in utils.py
-	"""
-	def __init__(self, init_lr, factor, patience, refractory_interval, 
-		           plateau_range=0.01, min_lr=1e-05):
-		# minimum lr = 0.00001
-		self.learning_rate = init_lr
-		self.factor = factor
-		self.patience = patience
-		self.plateau_range = plateau_range
-		self.min_lr = min_lr
-		self.min_reached = False
-		self.last_few = []
-		#to make sure LR update is not triggered multiple times in a row
-		self.n_invocations = 0
-		self.ref_int = refractory_interval
-
-	def memorize_hist(self, history):
-		# currently unused
-		self.last_few.append(history[-1])
-		try:
-			self.last_few = self.last_few[-self.patience]
-		except IndexError:
-			print('you know what happened')
-			pass
-		
-
-	def monitor(self, history=[]):
-
-		self.n_invocations += 1
-		if self.n_invocations > self.ref_int and not self.min_reached:
-			last_few = history[-self.patience:]
-			cum_diff = np.abs(np.sum(np.diff(last_few)))
-
-			if cum_diff < self.plateau_range:
-				lr = self.learning_rate * self.factor
-				self.learning_rate = max(lr, self.min_lr)
-				self.n_invocations = 0
-
-				if self.learning_rate <= self.min_lr:
-					self.min_reached = True
-					self.learning_rate = self.min_lr
-					print("Hit Minimum LR: {:.5f}".format(self.min_lr))
-				# N in {:.Nf} should be changed if min_lr is. 
-				print("New Learning Rate: {:.5f}".format(self.learning_rate))
-		return self.learning_rate
 	
 
 if __name__ =='__main__':
 
 	''' GPU(s) '''
 	gpus = tf.config.experimental.list_physical_devices('GPU')
-	GPU_N = 5
+	GPU_N = 0
 	if gpus:
 		try:
 			tf.config.experimental.set_visible_devices(gpus[GPU_N], 'GPU')
@@ -259,7 +216,6 @@ if __name__ =='__main__':
 	'''
 	loss and gradient function.
 	'''
-	# loss_object = tf.losses.SparseCategoricalCrossentropy()
 
 	@tf.function
 	def loss(model, x, y):
@@ -285,53 +241,36 @@ if __name__ =='__main__':
 		
 
 
-	# return lr_reducer
-	# hist1 = [90, 89, 88, 87, 86, 85, 84, 83]
-	# hist2 = [90, 89.5, 90, 90.5, 90, 89.5, 90, 90.5]
-	# adapt_lr = LearningRateReducer(0.1, 0.1, 4)
-	# 
-	# anslr1 = adapt_lr.monitor(hist1) # this should be 0.1
-	# anslr2 = adapt_lr.monitor(hist2) # this should be 0.01
-	
-
-
 	''' dataset and dataset iterator'''
 	## cifar100 is likey too small. Switching to imagenet2012
 	# cifar100 = tf.keras.datasets.cifar100
 	# (x_train, y_train), (x_test, y_test) = cifar100.load_data(label_mode='fine')
 
 	import tensorflow_datasets as tfds
+
 	tfds.list_builders()
-	import ipdb; ipdb.set_trace()
+	imagenet2012_builder = tfds.builder("imagenet2012")
+	train_set, test_set = imagenet2012_builder.as_dataset(split=["train", "validation"])
+
+	train_set = train_set.shuffle(1024).map(onetwentyseven)
+	train_set = train_set.batch(64)
+
+	test_set = test_set.shuffle(1024).map(onetwentyseven)
+	test_set = test_set.batch(64)
 	
-	# preprocess
-	x_train = (x_train.reshape(-1, 32, 32, 3) / 255).astype(np.float32)
-	x_test = (x_test.reshape(-1, 32, 32, 3) / 255).astype(np.float32)
-	
-	# create tf.data.Dataset
-	train_set = tf.data.Dataset.from_tensor_slices((x_train, y_train))
-	test_set = tf.data.Dataset.from_tensor_slices((x_test, y_test))
-
-	# now train_set and test_set are Dataset objects.
-	# we return the dataset iterator by calling the
-	# __iter__() method
-	#
-	# Alternatively, we can just iterate over the Datasets
-	# iff eager mode is on (i.e. by default).
-	train_set = train_set.shuffle(10000)
-	test_set.shuffle(10000)
-	b_train_set = train_set.batch(256)
-	b_test_set = test_set.batch(256)
-
-
 	''' model '''
-	from config import Config
 	from viz import *
-	from utils import test_model
+	from utils import test_model, onetwentyseven, LearningRateReducer
+	from config import Config
+	
+
 
 	mycon = Config()
-	model = ResNet((32, 32, 3), 100, mycon)
-	model.build(input_shape=(100, 32, 32, 3)) # place correct shape from imagenet
+	mycon.BATCH_SIZE = 64
+	mycon.BACKBONE = 'resnet51'
+	# best course of action for input shape declaration?
+	model = ResNet((None, None, 3), 1000, mycon)
+	model.build(input_shape=(64, 256, 256, 3)) # place correct shape from imagenet
 
 	''' initialize '''
 	# Reduce LR with *0.1 when plateau is detected
@@ -339,7 +278,7 @@ if __name__ =='__main__':
 						patience=10, refractory_interval=20) # wait 20 epochs from last update
 	loss_object = tf.losses.SparseCategoricalCrossentropy()
 	optimizer = tf.keras.optimizers.SGD(adapt_lr.monitor(), momentum = 0.9)
-
+	
 
 	train_loss_results = []
 	train_accuracy_results = []
@@ -358,8 +297,10 @@ if __name__ =='__main__':
 		
 		optimizer = tf.keras.optimizers.SGD(adapt_lr.monitor(train_loss_results), momentum = 0.9)
 
-		for batch in b_train_set:
-			img_btch, lab_btch = batch
+		for batch in train_set:
+			# img_btch, lab_btch, fn_btch = batch
+			img_btch = batch['image']
+			lab_btch = batch['label']
 			loss_value, grads = grad(model, img_btch, lab_btch)
 			optimizer.apply_gradients(zip(grads, model.trainable_variables))
 			epoch_loss_avg(loss_value)
@@ -368,33 +309,25 @@ if __name__ =='__main__':
 			if epoch < 1:
 				print("Epoch {:03d}: Batch: {:03d} Loss: {:.3%}, Accuracy: {:.3%}".format(epoch, k,  epoch_loss_avg.result(), epoch_accuracy.result()))
 			k+=1
-		
+
 		print("Trainset >> Epoch {:03d}: Loss: {:.3%}, Accuracy: {:.3%}".format(epoch, epoch_loss_avg.result(), epoch_accuracy.result()))
 		# end epoch
 
 		#if int(epoch_accuracy.result() > 70):
-		test_loss, test_accuracy = test_model(model, b_test_set)
+		test_loss, test_accuracy = test_model(model, test_set)
 
 		test_loss_results.append(test_loss)
 		test_acc_results.append(test_accuracy)
 		train_loss_results.append(epoch_loss_avg.result())
 		train_accuracy_results.append(epoch_accuracy.result())
 
-		# import ipdb; ipdb.set_trace()
 		
 		if epoch % 100 == 0:
-			fname = 'imgs/Test_Acc_Loss_CIFAR100_' + str(epoch) + '.png'
-			# here we should plot metrics and loss for test too. 
-			# hence TODO: update save_plot
+			fname = 'imgs/Test_Acc_Loss_IN2012_' + str(epoch) + '.png'
+
 			loss_l = [train_loss_results, test_loss_results]
 			acc_l = [train_accuracy_results, test_acc_results]
-			save_plot(loss_l, acc_l, fname)
-		
-		#if train_loss_results[-1] > train_loss_results[-2]: # was if epoch == 10:
-		#	learning_rate /= 10
-		#	optimizer = tf.keras.optimizers.SGD(lr=learning_rate, momentum=0.9)
-		#	print("Sir, we just updated the learning rate Sir.")
+			save_plot(loss_l, acc_l, fname) # plotting both train and validation. 
 	
-	
-	
+
 	import ipdb; ipdb.set_trace()
