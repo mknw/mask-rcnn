@@ -12,6 +12,26 @@ def norm_boxes_graph(boxes, shape):
 
 
 
+def apply_box_deltas_graph(boxes, deltas):
+	'''
+	apply deltas to boxes.
+	Args:
+		boxes: [N, (y1, x1, y2, x2)] boxes to update 
+		deltas: [N, (dy, dx, log(dh), log(dw))] refinements to apply
+	Returns:
+		result: 
+	'''
+	# convert to y, x, h, w
+	# height: y2 - y1:
+	height = boxes[:, 2] - boxes[:, 0]
+	# width: x2 - x1:
+	width = boxes[:, 3] - boxes[:, 1]
+	center_y = boxes[:, 0] + 0.5 * height
+	center_x = boxes[:, 1] + 0.5 * width
+	# apply deltas
+	center_y += deltas[:
+
+
 
 class ProposalLayer(ke.layers):
 	'''
@@ -57,7 +77,7 @@ class ProposalLayer(ke.layers):
 
 		# apply deltas to anchors to get refined anchors
 
-		# clip to image boundaries. Since we're in norm.zed coordinates,
+		#apply_box_deltas_out clip to image boundaries. Since we're in norm.zed coordinates,
 		# clip to 0..1 range. [batch, N, (y1, x1, y2, x2)]
 
 		# Non-max suppression
