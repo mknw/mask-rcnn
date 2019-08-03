@@ -26,11 +26,40 @@ def apply_box_deltas_graph(boxes, deltas):
 	height = boxes[:, 2] - boxes[:, 0]
 	# width: x2 - x1:
 	width = boxes[:, 3] - boxes[:, 1]
+	# find center
 	center_y = boxes[:, 0] + 0.5 * height
 	center_x = boxes[:, 1] + 0.5 * width
-	# apply deltas
-	center_y += deltas[:
 
+	# apply deltas
+	center_y += deltas[:, 0] * height
+	center_x += deltas[:, 1] * width
+	height *= tf.exp(deltas[:, 2])
+	width *= tf.exp(deltas[:, 3])
+	# back to y1, x1, y2, x2
+	y1 = center_y - 0.5 * height
+	x1 = center_x - 0.5 * width
+	y2 = y1 + height
+	x2 = x1 + width
+	result = tf.stack([y1, x1, y2, x2], axis=1, name"apply_box_deltas_out")
+	return result
+
+
+def clip_boxes_graph(boxes, window):
+	"""
+	boxes: [N, (y1, x1, y2, x2)]
+	window: [4] in the form y1, x1, y2, x2
+	"""
+	# split
+	wy1, wx1, wy2, wx2 = tf.split(window, 4)
+	y1, x1, y2, x2 = tf.split(boxes, 4, axis=1)
+	# Clip
+	y1 = tf.maximum(tf.minimum( y1, wy2), wy1)
+	x1 = tf.maximum(tf.minimum( x1, wx2), wx1)
+	y2 = tf.maximum(tf.minimum( y2, wy2), wy1)
+	x2 = tf.maximum(tf.minimum( x2, wx2), wx1)
+	clipped = tf.concat([y1, x1, y2, x2], axis=1, name="clipped_boxes")
+	clipped.set_shape((clipped.shape[0], 4))
+	return clipped
 
 
 class ProposalLayer(ke.layers):
@@ -98,10 +127,146 @@ class ProposalLayer(ke.layers):
 
 	
 
+'''
+ROIalign layer
+'''
+
+def log2_graph(x):
+	'''Implementatino of log2.'''
+	return tf.log(x) / tf.log(2.0)
+
+class PyramidROIAlign(ke.Layer):
+	''' implements ROI pooling on multiple levels of the feature pyramid. 
+	Params:
+	Inputs:
+	Output"
+	'''
+	def __init__(self, pool_shape, **kwargs):
+		super(PyramidROIAlign, self).__init__(**kwargs)
+		self.pool_shape = tuple(pool_shape)
+
+	def call(self, inputs):
+		boxes = inputs[0]
+
+		# image meta
+		# holds details about the image. See compose_image_meta()
+		image_meta = inputs[1]
+
+		# feature maps. list of feature maps from different level of the 
+		# feature pyramid (FP). Each is [batch, height, width, channels]
+		feature_maps = inputs[2:]
+		
+		# assign each ROi to a level in the pyramid based on the ROIs area.
+		y1, x1, y2, x2 = tf.split(boxes, 4, axis=2)
+		h = y2 - y1
+		w = x2 - x1
+		# use shape of first image. Iamges in a batch must have the same size.
+		image_shape = parse_image_meta_graph(image_meta)['image_shape'][0]
+		# Eq. 1 in Feature Pyramid Networks paper. Account for
+		# the fact that our coordinates are normalized here.
+		# e.g. a 224x224 ROI maps to P4
+		image_area = tf.cast(image_shape[0] * image_shape[1], tf.float32)
+		roi_level = log2_graph(tf.sqrt(h*w) / (224.0/ tf.sqrt(image_area)))
+		roi_level = tf.minimum(5, tf.maximum(
+						    2, 4 + tf.cast(tf.round(roi_level), tf.int32)))
+		roi_level = tf.squeeze(roi_level, 2)
+
+		# Loop through levels and apply ROI pooling to each P2 and P5.
+		box_to_level = []
+		pooled = []
+		for i, level in enumerate(range(2, 6)):
+			ix = tf.where(tf.equal(roi_level, level))
+			level_boxes = tf.gather_nd(boxes, ix)
+
+			# Box indices for crop_and_resize.
+			box_indices = tf.cast(ix[:, 0], tf.int32)
+
+			# Keep track of which box is mapped to which level
+			box_to_level.append(ix)
+
+			# Stop gradient propagation to ROI proposals
+			level_boxes = tf.stop_gradient(level_boxes)
+			box_indices = tf.stop_gradient(box_indices)
+
+			# crop and resize 
+			# from mask rcnn paper. "we sample four regular locations, so
+			# that we can evaluate either max or average pooling. In fact, 
+			# interpolating only a single value at each bin center (without pooling)
+			# is nearly as effective."
+
+			# Here the simplifiedapproach is used, using a single value pper bin.
+			# (following tf.crop_and_resize() imlementation). 
+			# Result: [batch * num_boxes, pool_height, pool_width, channels]
+			pooled.append(tf.image.crop_and_resize(
+					feature_maps[i], level_boxes, box_indices, self.pool_shape,
+					method="bilinear")
+			
+		# pack pooled features into one tensor
+		pooled = tf.concat(pooled, axis=0)
+		
+		# pack box_to_level mapping into one array and add another
+		# column representing the order of pooled boxes
+		box_to_level = tf.concat(box_to_level, axis=0
+		box_range = tf,expand_dims(tf.range(tf.shape(box_to_level)[0]), 1)
+		box_to_level=tf.concat([tf.cast(box_to_level, tf.int32), box_range],
+					       axis=1)
+
+		# rearrage pooled featyres to match the order of the original boxes
+		# sort box_to_level by batch then box index
+		# tf doesn't have a way to sort by two columns, so merge them and sort
+		sorting_tensor = box_to_level[:, 0] * 100000 + box_to_level[:, 1]
+		ix = tf.nn.top_k(sorting_tensor, k=tf.shape(
+					box_to_level)[0]).indices[::-1]
+		ix = tf.gather(box_to_level[:, 2], ix)
+		pooled = tf.gather(pooled, ix)
+		
+		# Re-add the batch dimension
+		shape = tf.concat([tf.shape(boxes)[:2], tf.shape(pooled)[1:]], axis=0)
+		pooled = tf.reshape(pooled, shape)
+		return pooled
+	
+	def compute_output_shape(self, input_shape):
+		return input_shape[0][:2] + self.pool_shape + (input_shape[2][-1], )
 
 
+'''
+Detection Target Layer
+'''
+ 
+def overlaps_graph(boxes1, boxes2): # TODO: change name to IoUsomething()
+	''' computes IoU overlaps between two sets of boxes. 
+	boxes1, boxes2: [N, (y1, x1, y2, x2)].
+	'''
+	# 1. Tile boxes2 and repeat boxes1. This allows us to compare 
+	# every boxes1 against every boxes2 without loops. 
+	# TF doesn't have an wquivalent ot np.repeat() so simpuate it
+	# using tf.tile() and tf.reshape. 
+	
+	b1 = tf.reshape(tf.tile(tf.expand_dims(boxes1, 1), 
+				          [1, 1, tf.shape(boxes2)[0]]), [-1, 4])
+	b2 = tf.tile(boxes2, [tf.shape(boxes1)[0], 1])
+	# 2. Compute intersection
+	b1_y1, b1_x1, b1_y2, b1_x2 = tf.split(b1, 4, axis=1)
+	b2_y1, b2_x1, b2_y2, b2_x2 = tf.split(b2, 4, axis=1)
+	y1 = tf.maximum(b1_y1, b2_y1)
+	x1 = tf.maximum(b1_x1, b2_x1)
+	y2 = tf.minimum(b1_y2, b2_y2)
+	x2 = tf.minimum(b1_x2, b2_x2)
+	intersection = tf.maximum(x2 - x1, 0) * tf.maximum(y2 - y1, 0)
+	# 3. Compute unions
+	b1_area = (b1_y1 - b1_y1) * (b1_x2 - b1_x1)
+	b2_area = (b2_y2 - b2_y1) * (b2_x2 - b2_x1)
+	union = b1_area + b2_area - intersection 
+	# 4. compute IoU and reshape to [boxes1, boxes2]
+	iou = intersection / union
+	overlaps = tf.reshape(iou, [tf.shape(boxes1)[0], tf.shape(boxes2)[0]])
+	return overlaps
 
 
+# START FROM: 
+
+def detection_targets_graph(proposals, gt_class_ids, gt_boxes, gt_masks, config):
+	pass
 
 
 class MaskRCNN(tf.keras.Model):

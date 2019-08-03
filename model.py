@@ -82,7 +82,7 @@ class ResNet(Model):
 		""" conv5_x """
 		st = '5' # stage 5
 		# self.conv5 = Conv2D(2048, kernel_size=(1,1), strides=(2,2))
-		self.conv5 = self._building_block(st+blks[0], # downsample=False,
+		self.conv5 = self._building_block(st+blks[0],
 								2048, channel_in=1024, downsample=True)
 		self.block5 = [self._building_block(st+blks[i+1], 2048) for i in range(2)]
 
