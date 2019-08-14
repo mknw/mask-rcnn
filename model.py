@@ -112,7 +112,7 @@ class ResNet(Model):
 		h = self.avg_pool(h) # start dense
 		h = self.fc(h) # fully connected
 		y = self.out(h) # softmax
-		return y
+		return y # TODO: return h2, h3, h4 and h5 after each conv. stage. 
 
 
 	def _building_block(self, st_bl_name, channel_out=64, channel_in=None, downsample=False):

@@ -12,14 +12,17 @@ def norm_boxes_graph(boxes, shape):
 
 
 
-def apply_box_deltas_graph(boxes, deltas):
+def apply_box_deltas(boxes, deltas):
 	'''
-	apply deltas to boxes.
+	apply given deltas to given boxes.
 	Args:
 		boxes: [N, (y1, x1, y2, x2)] boxes to update 
 		deltas: [N, (dy, dx, log(dh), log(dw))] refinements to apply
 	Returns:
-		result: 
+		result: TODO
+	Used in:
+		1. ProposalLayer.call()
+		2. refine_detection_graph()  [Detection Layer]
 	'''
 	# convert to y, x, h, w
 	# height: y2 - y1:
@@ -46,8 +49,14 @@ def apply_box_deltas_graph(boxes, deltas):
 
 def clip_boxes_graph(boxes, window):
 	"""
-	boxes: [N, (y1, x1, y2, x2)]
-	window: [4] in the form y1, x1, y2, x2
+	Args:
+		boxes: [N, (y1, x1, y2, x2)]
+		window: [4] in the form y1, x1, y2, x2
+	Out: 
+		TODO
+	User in:
+		ProposalLayer.call()
+		refine_detections_graph()
 	"""
 	# split
 	wy1, wx1, wy2, wx2 = tf.split(window, 4)
@@ -75,7 +84,10 @@ class ProposalLayer(ke.layers):
 		anchors: [batch, num_anchors, (y1, x1, y2, x2)] in norm.zed coords.
 
 	Returns:
-		Prposals in normalized coordinates [btch, rois, (y1, x1, y2, x2)]
+		Proposals in normalized coordinates [btch, rois, (y1, x1, y2, x2)]
+
+	Used in:
+		MaskRCNN.build()
 	'''
 	def __init__(self, proposal_count, nms_threshold, config=None, **kwargs):
 		super(ProposalLayer, self).__init__(**kwargs)
