@@ -17,19 +17,20 @@ from viz import save_plot
 
 
 
-def onetwentyseven(x):
+def norm_zero_centred(x):
 	x['image'] = tf.image.resize(x['image'], size=(256, 256))
-	x['image'] = tf.cast(x['image'], tf.float32) / 127.5 - 1
+	x['image'] = tf.cast(x['image'], tf.float64) / 127.5 - 1
 	return x
 
 
-def twofifty(x):
-	x['image'] = tf.cast(x['image'], tf.float32) / 255.
+def norm_to_one(x):
+	x['image'] = tf.image.resize(x['image'], size=(256, 256))
+	x['image'] = tf.cast(x['image'], tf.float64) / 255.
 	return x
 
 def test_model(model, test_set):
 	''' test '''
-# initialize 1) loss object, 2) overall metrics, 3) per batch metric lists. 
+	# initialize 1) loss object, 2) overall metrics, 3) per batch metric lists. 
 	def loss(model, x, y):
 		y_ = model(x)
 		return loss_object(y_true=y, y_pred=y_)
@@ -41,7 +42,7 @@ def test_model(model, test_set):
 
 	pbtch_loss_results = []
 	pbtch_accuracy_results = []
-	k = 0 # batch counter
+	# k = 0 # batch counter
 	
 	for batch in test_set:
 
@@ -61,7 +62,7 @@ def test_model(model, test_set):
 		test_accuracy(lab_btch, model(img_btch))
 		test_loss_avg(loss_value)
 		# print("Batch: {:03d} Loss: {:.3%}, Accuracy: {:.3%}".format(k,  loss_value, btch_accuracy.result()))
-		k+=1
+		# k+=1
 
 	# save_plot(pbtch_loss_results, pbtch_accuracy_results, 'imgs/TEST.png')
 	print("Performance on Test set: Loss: {:.3%}, Accuracy: {:.3%}".format(test_loss_avg.result(), test_accuracy.result()))
@@ -95,8 +96,8 @@ class LearningRateReducer(object):
 			self.last_few = self.last_few[-self.patience]
 		except IndexError:
 			print('you know what happened')
-			pass
-		
+			import ipdb; ipdb.set_trace()
+			
 
 	def monitor(self, history=[]):
 

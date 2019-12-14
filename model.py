@@ -16,7 +16,7 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras.layers import Layer, GlobalAveragePooling2D, Conv2D, BatchNormalization, Activation, MaxPooling2D, Dense
 from tensorflow.keras import Model
-from utils import onetwentyseven, test_model, LearningRateReducer
+from utils import norm_zero_centred, test_model, LearningRateReducer
 
 '''
 TODO:
@@ -28,7 +28,7 @@ TODO:
 '''
 
 from distutils.version import LooseVersion
-assert LooseVersion(tf.__version__) >= LooseVersion("2.0.0-beta1")
+assert LooseVersion(tf.__version__) >= LooseVersion("2.0.0")
 
 
 class ResNet(Model):
@@ -37,6 +37,8 @@ class ResNet(Model):
 		
 		super(ResNet, self).__init__()
 		# assert config.BACKBONE in ['51', '101']
+		self.train_bn = config.TRAIN_BN# we turn off training for small batch size. 
+		print('found config.TRAIN_BN: ' + str(config.TRAIN_BN))
 
 		'''
 		TODO: add regularization loss (weight decay = 0.0001
@@ -48,7 +50,7 @@ class ResNet(Model):
 		# Here the output shape is NOT specified, 
 		# whereas in ResNet output size should be 112x112. 
 		self.conv1 = Conv2D(64, input_shape=input_shape, kernel_size=(7,7),strides=(2,2), padding='same', name='conv1')
-		self.bn1 = BatchNormalization()
+		self.bn1 = BatchNormalization(trainable=self.train_bn)
 
 		""" conv2_x """
 		st= '2' # stage
@@ -114,16 +116,35 @@ class ResNet(Model):
 		y = self.out(h) # softmax
 		return y # TODO: return h2, h3, h4 and h5 after each conv. stage. 
 
+	def stage_summary(self, stage_index):
 
-	def _building_block(self, st_bl_name, channel_out=64, channel_in=None, downsample=False):
+		if isinstance(stage_index, int):
+			stage_index = [stage_index]
+
+		stages = {2: [self.conv2, self.block2],
+				      3: [self.conv3, self.block3],
+							4: [self.conv4, self.block4],
+							5: [self.conv5, self.block5]}
+
+		import ipdb; ipdb.set_trace()
+		for i in stage_index:
+			stages[i][0].summary()
+			[b.summary() for b in stages[i][1]]
+
+
+		super(ResNet, self).summary()
+
+
+	def _building_block(self, st_bl_name, channel_out, channel_in=None, 
+			downsample=False):
 		if channel_in is None:
 			channel_in = channel_out
-		return Block(st_bl_name, channel_in, channel_out, downsample)
+		return Block(st_bl_name, channel_in, channel_out, downsample, self.train_bn)
 
 
-class Block(Layer):
-	"""ResNet101 building block"""
-	def __init__(self, st_bl_name, channel_in=64, channel_out=256, downsample=False):
+class Block(Model): # WAS LAYER """ResNet101 building block"""
+	def __init__(self, st_bl_name, channel_in, channel_out, downsample=False,
+							 train_bn=True):
 		
 		super(Block, self).__init__()
 		
@@ -145,15 +166,15 @@ class Block(Layer):
 		filters = channel_out // 4
 		self.conv1 = Conv2D(filters, kernel_size=(1,1), strides=strides,
 				padding='same', name=conv_basename + '2a')
-		self.bn1 = BatchNormalization(name=bn_basename + '2a')
+		self.bn1 = BatchNormalization(name=bn_basename + '2a', trainable=train_bn)
 
 		self.conv2 = Conv2D(filters, kernel_size=(3, 3), padding='same',
 				name = conv_basename + '2b')
-		self.bn2 = BatchNormalization(name = bn_basename + '2b')
+		self.bn2 = BatchNormalization(name = bn_basename + '2b', trainable=train_bn)
 
 		self.conv3 = Conv2D(channel_out, kernel_size=(1,1), padding='same',
 				name = conv_basename + '2c')
-		self.bn3 = BatchNormalization(name = bn_basename + '2c')
+		self.bn3 = BatchNormalization(name = bn_basename + '2c', trainable=train_bn)
 		# here conv_basename is used only if self._shortcut is a convolutional identity block
 		# (else the value is unused)
 		self.shortcut = self._shortcut(channel_in, channel_out, strides, conv_basename+'1') 
@@ -199,8 +220,16 @@ class Block(Layer):
 if __name__ =='__main__':
 
 	''' GPU(s) '''
+	from argparse import ArgumentParser
+
+	parser = ArgumentParser()
+	parser.add_argument("-gpu", dest="gpu", default=4)
+	parser.add_argument("-viz-dir", dest="viz_dir", default="./imgs/")
+	args = parser.parse_args()
+
+
 	gpus = tf.config.experimental.list_physical_devices('GPU')
-	GPU_N = 0
+	GPU_N = args.gpu
 	if gpus:
 		try:
 			tf.config.experimental.set_visible_devices(gpus[GPU_N], 'GPU')
@@ -229,7 +258,7 @@ if __name__ =='__main__':
 		"""
 		diff = tf.abs(y_true - y_pred)
 		less_than_one = K.cast(tf.less(diff, 1.0), "float32")
-		loss = (less_than_one * 0.5 * diff**2) + (1 - less_than_one) * (diff - 0.5)
+		lossl1 = (less_than_one * 0.5 * diff**2) + (1 - less_than_one) * (diff - 0.5)
 		return loss
 
 	@tf.function
@@ -242,7 +271,6 @@ if __name__ =='__main__':
 
 
 	''' dataset and dataset iterator'''
-	## cifar100 is likey too small. Switching to imagenet2012
 	# cifar100 = tf.keras.datasets.cifar100
 	# (x_train, y_train), (x_test, y_test) = cifar100.load_data(label_mode='fine')
 
@@ -250,26 +278,26 @@ if __name__ =='__main__':
 
 	tfds.list_builders()
 	imagenet2012_builder = tfds.builder("imagenet2012")
-	train_set, test_set = imagenet2012_builder.as_dataset(split=["train", "validation"])
+	train_set, val_set = imagenet2012_builder.as_dataset(split=["train", "validation"])
 
-	train_set = train_set.shuffle(1024).map(onetwentyseven)
-	train_set = train_set.batch(64)
+	train_set = train_set.shuffle(1024).map(norm_zero_centred)
+	train_set = train_set.batch(32)
 
-	test_set = test_set.shuffle(1024).map(onetwentyseven)
-	test_set = test_set.batch(64)
+	val_set = val_set.shuffle(1024).map(norm_zero_centred)
+	val_set = val_set.batch(32)
 	
 	''' model '''
 	from viz import *
-	from utils import test_model, onetwentyseven, LearningRateReducer
+	from utils import test_model, norm_zero_centred, LearningRateReducer
 	from config import Config
 	
 
 
-	mycon = Config()
-	mycon.BATCH_SIZE = 64
-	mycon.BACKBONE = 'resnet51'
+	C = Config()
+	C.BATCH_SIZE = 32
+	C.BACKBONE = 'resnet51'
 	# best course of action for input shape declaration?
-	model = ResNet((None, None, 3), 1000, mycon)
+	model = ResNet((None, None, 3), 1000, C)
 	model.build(input_shape=(64, 256, 256, 3)) # place correct shape from imagenet
 
 	''' initialize '''
@@ -289,6 +317,8 @@ if __name__ =='__main__':
 	
 	''' train '''
 
+	import ipdb; ipdb.set_trace()
+
 	for epoch in range(num_epochs):
 	
 		epoch_loss_avg = tf.keras.metrics.Mean()
@@ -301,6 +331,7 @@ if __name__ =='__main__':
 			# img_btch, lab_btch, fn_btch = batch
 			img_btch = batch['image']
 			lab_btch = batch['label']
+			import ipdb; ipdb.set_trace()
 			loss_value, grads = grad(model, img_btch, lab_btch)
 			optimizer.apply_gradients(zip(grads, model.trainable_variables))
 			epoch_loss_avg(loss_value)
@@ -314,7 +345,7 @@ if __name__ =='__main__':
 		# end epoch
 
 		#if int(epoch_accuracy.result() > 70):
-		test_loss, test_accuracy = test_model(model, test_set)
+		test_loss, test_accuracy = test_model(model, val_set)
 
 		test_loss_results.append(test_loss)
 		test_acc_results.append(test_accuracy)
@@ -323,7 +354,7 @@ if __name__ =='__main__':
 
 		
 		if epoch % 100 == 0:
-			fname = 'imgs/Test_Acc_Loss_IN2012_' + str(epoch) + '.png'
+			fname = os.path.join(args.viz_dir,  '/Test_Acc_Loss_IN2012_' + str(epoch) + '.png')
 
 			loss_l = [train_loss_results, test_loss_results]
 			acc_l = [train_accuracy_results, test_acc_results]
