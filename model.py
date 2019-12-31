@@ -65,16 +65,12 @@ class ResNet(Model):
 
 		""" conv3_x """
 		st = '3' # stage 3
-		# self.conv2 = Conv2D(512, kernel_size=(1,1), strides=(2, 2)) 
-		# why is this here? probably downs. for next layer. Let's see if removing it
-		# fucks it up. Indeed, can we implement it in blocks?
 		self.conv3 = self._building_block(st+blks[0], 
 								 512, channel_in=256, downsample=True)
 		self.block3 = [self._building_block(st+blks[i+1], 512) for i in range(3)]
 
 		""" conv4_x """ 
 		st = '4' # stage 4
-		# self.conv4 = Conv2D(1024, kernel_size=(1,1), strides=(2,2))
 		n_blocks = {'resnet51': 6, 'resnet101': 23}[config.BACKBONE]
 
 		self.conv4 = self._building_block(st+blks[0],
@@ -83,7 +79,6 @@ class ResNet(Model):
 		
 		""" conv5_x """
 		st = '5' # stage 5
-		# self.conv5 = Conv2D(2048, kernel_size=(1,1), strides=(2,2))
 		self.conv5 = self._building_block(st+blks[0],
 								2048, channel_in=1024, downsample=True)
 		self.block5 = [self._building_block(st+blks[i+1], 2048) for i in range(2)]
@@ -252,22 +247,22 @@ if __name__ =='__main__':
 		return loss_object(y_true=y, y_pred=y_)
 	
 	@tf.function
-	def smooth_l1_loss(y_true, y_pred):
+	def smooth_l1_loss(model, x, y):
 		"""Implements Smooth-L1 loss.
 		y_true and y_pred are typically: [N, 4], but could be any shape.
 		"""
-		diff = tf.abs(y_true - y_pred)
-		less_than_one = K.cast(tf.less(diff, 1.0), "float32")
-		lossl1 = (less_than_one * 0.5 * diff**2) + (1 - less_than_one) * (diff - 0.5)
-		return loss
+		import ipdb; ipdb.set_trace()
+		y_ = model(x)
+		deltas = tf.abs(y - y_)
+		less_than_one = tf.keras.cast(tf.less(deltas, 1.0), "float32")
+		lossl1 = (less_than_one * 0.5 * deltas**2) + (1 - deltas) * (deltas - 0.5)
+		return lossl1
 
 	@tf.function
 	def grad(model, inputs, targets):
 		with tf.GradientTape() as tape:
 			loss_value = loss(model, inputs, targets)
 		return loss_value, tape.gradient(loss_value, model.trainable_variables)
-
-		
 
 
 	''' dataset and dataset iterator'''
@@ -295,17 +290,20 @@ if __name__ =='__main__':
 
 	C = Config()
 	C.BATCH_SIZE = 32
+	C.INPUT_SIZE = (256, 256)
+
 	C.BACKBONE = 'resnet51'
 	# best course of action for input shape declaration?
-	model = ResNet((None, None, 3), 1000, C)
-	model.build(input_shape=(64, 256, 256, 3)) # place correct shape from imagenet
+	model = ResNet((256, 256, 3), 1000, C)
+	model.build(input_shape=(C.BATCH_SIZE, 256, 256, 3)) # place correct shape from imagenet
 
 	''' initialize '''
 	# Reduce LR with *0.1 when plateau is detected
 	adapt_lr = LearningRateReducer(init_lr=0.1, factor=0.1,
 						patience=10, refractory_interval=20) # wait 20 epochs from last update
-	loss_object = tf.losses.SparseCategoricalCrossentropy()
-	optimizer = tf.keras.optimizers.SGD(adapt_lr.monitor(), momentum = 0.9)
+	loss_object = tf.losses.SparseCategoricalCrossentropy(from_logits=True)
+	# optimizer = tf.keras.optimizers.SGD(adapt_lr.monitor(), momentum = 0.9)
+	optimizer = tf.keras.optimizers.SGD(0.01, momentum = 0.9)
 	
 
 	train_loss_results = []
@@ -325,23 +323,25 @@ if __name__ =='__main__':
 		epoch_accuracy = tf.keras.metrics.SparseCategoricalAccuracy()
 		k = 0
 		
-		optimizer = tf.keras.optimizers.SGD(adapt_lr.monitor(train_loss_results), momentum = 0.9)
+		# optimizer = tf.keras.optimizers.SGD(adapt_lr.monitor(train_loss_results), momentum = 0.9)
 
 		for batch in train_set:
 			# img_btch, lab_btch, fn_btch = batch
 			img_btch = batch['image']
 			lab_btch = batch['label']
-			import ipdb; ipdb.set_trace()
 			loss_value, grads = grad(model, img_btch, lab_btch)
 			optimizer.apply_gradients(zip(grads, model.trainable_variables))
+			# track progress.
 			epoch_loss_avg(loss_value)
 			epoch_accuracy(lab_btch, model(img_btch))
 
 			if epoch < 1:
-				print("Epoch {:03d}: Batch: {:03d} Loss: {:.3%}, Accuracy: {:.3%}".format(epoch, k,  epoch_loss_avg.result(), epoch_accuracy.result()))
+				if epoch_loss_avg.result() != prev_epoch_loss_avg:
+					print("Epoch {:03d}: Batch: {:03d} Loss: {:.3%}, Accuracy: {:.3%}".format(epoch, k,  epoch_loss_avg.result(), epoch_accuracy.result()))
+					prev_epoch_loss_avg = epoch_loss_avg.result()
 			k+=1
 
-		print("Trainset >> Epoch {:03d}: Loss: {:.3%}, Accuracy: {:.3%}".format(epoch, epoch_loss_avg.result(), epoch_accuracy.result()))
+		print("Trainset >> Epoch {:03d}: Loss: {:.3%}, Accuracy: {:.3%}".format(epoch, , epoch_accuracy.result()))
 		# end epoch
 
 		#if int(epoch_accuracy.result() > 70):
