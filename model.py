@@ -20,11 +20,10 @@ from utils import norm_zero_centred, test_model, LearningRateReducer
 
 '''
 TODO:
-- maskRCNN
-- Batchnorm layers freezing/training. Important for small size batch. 
 - LearningRateReducer:
 	1. tune plateau_range
 	2. At the end of training, learning rate always change. We could make plateau_range adaptive too (e.g. multiplied by LRR.factor)
+- layer regularization
 '''
 
 from distutils.version import LooseVersion
@@ -218,7 +217,7 @@ if __name__ =='__main__':
 	from argparse import ArgumentParser
 
 	parser = ArgumentParser()
-	parser.add_argument("-gpu", dest="gpu", default=4)
+	parser.add_argument("-gpu", dest="gpu", default=4, type=int)
 	parser.add_argument("-viz-dir", dest="viz_dir", default="./imgs/")
 	args = parser.parse_args()
 
@@ -232,6 +231,7 @@ if __name__ =='__main__':
 			print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPUs")
 		except RuntimeError as e:
 			print(e)
+			import ipdb; ipdb.set_trace()
 
 	
 	np.random.seed(420)
@@ -241,9 +241,10 @@ if __name__ =='__main__':
 	loss and gradient function.
 	'''
 
-	@tf.function
+	# @tf.function
 	def loss(model, x, y):
 		y_ = model(x)
+		# import ipdb; ipdb.set_trace()
 		return loss_object(y_true=y, y_pred=y_)
 	
 	@tf.function
@@ -273,6 +274,10 @@ if __name__ =='__main__':
 
 	tfds.list_builders()
 	imagenet2012_builder = tfds.builder("imagenet2012")
+	specs = imagenet2012_builder.info
+	train_instances = specs.splits['train'].num_examples
+	val_instances = specs.splits['validation'].num_examples
+
 	train_set, val_set = imagenet2012_builder.as_dataset(split=["train", "validation"])
 
 	train_set = train_set.shuffle(1024).map(norm_zero_centred)
@@ -285,7 +290,7 @@ if __name__ =='__main__':
 	from viz import *
 	from utils import test_model, norm_zero_centred, LearningRateReducer
 	from config import Config
-	
+	from progress import Regbar
 
 
 	C = Config()
@@ -294,16 +299,16 @@ if __name__ =='__main__':
 
 	C.BACKBONE = 'resnet51'
 	# best course of action for input shape declaration?
-	model = ResNet((256, 256, 3), 1000, C)
+	model = ResNet((256, 256, 3), output_dim=1000, config=C)
 	model.build(input_shape=(C.BATCH_SIZE, 256, 256, 3)) # place correct shape from imagenet
 
 	''' initialize '''
 	# Reduce LR with *0.1 when plateau is detected
-	adapt_lr = LearningRateReducer(init_lr=0.1, factor=0.1,
-						patience=10, refractory_interval=20) # wait 20 epochs from last update
-	loss_object = tf.losses.SparseCategoricalCrossentropy(from_logits=True)
+	# adapt_lr = LearningRateReducer(init_lr=0.1, factor=0.1,
+	# 					patience=10, refractory_interval=20) # wait 20 epochs from last update
+	loss_object = tf.losses.SparseCategoricalCrossentropy()
 	# optimizer = tf.keras.optimizers.SGD(adapt_lr.monitor(), momentum = 0.9)
-	optimizer = tf.keras.optimizers.SGD(0.01, momentum = 0.9)
+	optimizer = tf.keras.optimizers.Adam(0.001) # haven't tried this yet.. 
 	
 
 	train_loss_results = []
@@ -311,14 +316,19 @@ if __name__ =='__main__':
 	test_loss_results, test_acc_results = [], []
 
 	num_epochs = 300
-	
+	prev_epoch_loss_avg = 0.
+	n_train_btchs =  int(train_instances) // C.BATCH_SIZE
+
 	
 	''' train '''
 
 	import ipdb; ipdb.set_trace()
 
-	for epoch in range(num_epochs):
+
+	for epoch in range(1,num_epochs):
 	
+		progbar = Regbar(n_train_btchs,stateful_vars=['batch CCE', 'epoch accuracy'])
+
 		epoch_loss_avg = tf.keras.metrics.Mean()
 		epoch_accuracy = tf.keras.metrics.SparseCategoricalAccuracy()
 		k = 0
@@ -335,13 +345,14 @@ if __name__ =='__main__':
 			epoch_loss_avg(loss_value)
 			epoch_accuracy(lab_btch, model(img_btch))
 
-			if epoch < 1:
-				if epoch_loss_avg.result() != prev_epoch_loss_avg:
-					print("Epoch {:03d}: Batch: {:03d} Loss: {:.3%}, Accuracy: {:.3%}".format(epoch, k,  epoch_loss_avg.result(), epoch_accuracy.result()))
-					prev_epoch_loss_avg = epoch_loss_avg.result()
+			# print("Epoch {:03d}: Batch: {:03d} Loss: {}, Accuracy: {}".format(epoch, k,  epoch_loss_avg.result(), epoch_accuracy.result()))
+			progbar.update(k, values=[('batch CCE', loss_value),
+					                          ('epoch accuracy', epoch_accuracy.result())])
 			k+=1
+			# prev_epoch_loss_avg = epoch_loss_avg.result()
 
-		print("Trainset >> Epoch {:03d}: Loss: {:.3%}, Accuracy: {:.3%}".format(epoch, , epoch_accuracy.result()))
+
+		print("Trainset >> Epoch {:03d}: Loss: {}, Accuracy: {}".format(epoch, epoch_accuracy.result()))
 		# end epoch
 
 		#if int(epoch_accuracy.result() > 70):
@@ -352,7 +363,6 @@ if __name__ =='__main__':
 		train_loss_results.append(epoch_loss_avg.result())
 		train_accuracy_results.append(epoch_accuracy.result())
 
-		
 		if epoch % 100 == 0:
 			fname = os.path.join(args.viz_dir,  '/Test_Acc_Loss_IN2012_' + str(epoch) + '.png')
 

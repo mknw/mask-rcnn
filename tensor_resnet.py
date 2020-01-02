@@ -74,8 +74,9 @@ class ImageNetSequence(tf.keras.utils.Sequence):
 
 model = ResNet(input_shape=(None, 32, 32, 3), output_dim=10, config=C)
 model.compile(optimizer='adam',
-		          loss='sparse_categorical_crossentropy',
+							loss = tf.losses.SparseCategoricalCrossentropy(),
 							metrics=['accuracy'])
+		          #loss='sparse_categorical_crossentropy',
 # model.build(input_shape = (None, 28, 28, 1))
 # model.summary()
 # model.build(input_shape=(None, 256, 256, 3))
@@ -90,7 +91,7 @@ hist = model.fit_generator(generator=train_set.__iter__(),
 '''
 # plot the model composition:
 # """ cifar-10
-model.fit(train_images, train_labels, batch_size=64, epochs=60)
+model.fit(train_images, train_labels, batch_size=64, epochs=20)
 # plot the model composition:
 test_loss, test_acc = model.evaluate(test_images, test_labels, verbose=2)
 print("\nTest Loss: ", test_loss)
